@@ -290,6 +290,11 @@ button {
   background: var(--bad);
 }
 
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
 .segmented {
   display: flex;
   flex-wrap: wrap;
