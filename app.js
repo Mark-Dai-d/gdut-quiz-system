@@ -101,6 +101,57 @@ function loadPracticeState(username = state.user?.username) {
   }
   state.quiz = saved.quiz || null;
   state.insightText = saved.insightText || "";
+  restoreQuizStep();
+}
+
+function selectedArray(value) {
+  if (Array.isArray(value)) return value.filter(Boolean).map(String).sort();
+  if (typeof value === "string" && value.includes(",")) return value.split(",").map((x) => x.trim()).filter(Boolean).sort();
+  return [value].filter(Boolean).map(String).sort();
+}
+
+function emptySelection(q) {
+  return q?.type === "multiple" ? [] : "";
+}
+
+function selectionForQuestion(q, value) {
+  const values = selectedArray(value);
+  return q?.type === "multiple" ? values : values[0] || "";
+}
+
+function ensureQuizState() {
+  if (!state.quiz) return null;
+  if (!state.quiz.answerStates || Array.isArray(state.quiz.answerStates)) state.quiz.answerStates = {};
+  if (!Number.isInteger(state.quiz.index)) state.quiz.index = 0;
+  const q = state.quiz.questions?.[state.quiz.index];
+  if (!q) return null;
+  const key = String(state.quiz.index);
+  if (!state.quiz.answerStates[key]) {
+    state.quiz.answerStates[key] = {
+      selected: selectionForQuestion(q, state.quiz.selected ?? emptySelection(q)),
+      feedback: state.quiz.feedback || null,
+      insightText: state.insightText || "",
+    };
+  }
+  return state.quiz.answerStates[key];
+}
+
+function restoreQuizStep() {
+  const current = ensureQuizState();
+  if (!current) return;
+  const q = state.quiz.questions[state.quiz.index];
+  state.quiz.selected = selectionForQuestion(q, current.selected ?? emptySelection(q));
+  state.quiz.feedback = current.feedback || null;
+  state.insightText = current.insightText || "";
+}
+
+function saveCurrentQuizStep(patch = {}) {
+  const current = ensureQuizState();
+  if (!current) return;
+  const q = state.quiz.questions[state.quiz.index];
+  const next = { ...current, ...patch };
+  next.selected = selectionForQuestion(q, next.selected ?? state.quiz.selected ?? emptySelection(q));
+  state.quiz.answerStates[String(state.quiz.index)] = next;
 }
 
 function init() {
@@ -122,10 +173,10 @@ function stats() {
   const total = data.records.length;
   const correct = data.records.filter((r) => r.correct).length;
   const wrongIds = Object.entries(data.states).filter(([, s]) => s.wrongCount > 0).map(([id]) => Number(id));
-  const due = wrongIds.filter((id) => {
-    const s = data.states[id];
-    return s.nextReviewAt && !s.masteredAt && new Date(s.nextReviewAt) <= new Date();
-  });
+  const now = Date.now();
+  const due = wrongIds
+    .filter((id) => !data.states[id]?.masteredAt)
+    .sort((a, b) => reviewSortKey(data, a, now) - reviewSortKey(data, b, now));
   const byChapter = state.chapters.map((c) => {
     const ids = new Set(BANK.filter((q) => q.chapterId === c.id).map((q) => q.id));
     const records = data.records.filter((r) => ids.has(r.questionId));
@@ -149,9 +200,26 @@ function stats() {
     },
     chapters: byChapter,
     top_wrong: topWrong,
-    dueQuestions: due.map(questionById),
+    dueQuestions: due.map(questionById).filter(Boolean),
     wrongbook: wrongIds.map((id) => ({ ...questionById(id), ...data.states[id] })).sort((a, b) => b.wrongCount - a.wrongCount),
   };
+}
+
+function lastRecordFor(data, questionId) {
+  return data.records
+    .filter((r) => Number(r.questionId) === Number(questionId))
+    .sort((a, b) => new Date(a.answeredAt) - new Date(b.answeredAt))
+    .at(-1);
+}
+
+function reviewSortKey(data, questionId, now = Date.now()) {
+  const s = data.states[questionId] || {};
+  const last = lastRecordFor(data, questionId);
+  const nextTime = s.nextReviewAt ? new Date(s.nextReviewAt).getTime() : Number.POSITIVE_INFINITY;
+  const lastTime = last?.answeredAt ? new Date(last.answeredAt).getTime() : 0;
+  if (last && !last.correct) return -2_000_000_000_000 - lastTime;
+  if (nextTime <= now) return -1_000_000_000_000 + nextTime;
+  return nextTime;
 }
 
 function questionById(id) {
@@ -285,9 +353,11 @@ function chapterCheckboxes() {
 }
 
 function renderQuiz() {
+  restoreQuizStep();
   const q = state.quiz.questions[state.quiz.index];
   const selected = Array.isArray(state.quiz.selected) ? state.quiz.selected : [state.quiz.selected].filter(Boolean);
   const correct = state.quiz.feedback?.answerLetters || [];
+  const previousDisabled = state.quiz.index === 0 ? "disabled" : "";
   return `
     <div class="topline"><h2>${modeName(state.quiz.mode)}</h2><div class="actions"><span class="chapter-chip">${state.quiz.index + 1} / ${state.quiz.questions.length}</span><button class="btn secondary" onclick="endQuiz()">结束本轮</button></div></div>
     <section class="panel quiz-card">
@@ -299,10 +369,13 @@ function renderQuiz() {
           if (correct.includes(l)) cls += " correct";
           if (!state.quiz.feedback.correct && selected.includes(l) && !correct.includes(l)) cls += " wrong";
         }
-        return `<label class="${cls}"><input type="${q.type === "multiple" ? "checkbox" : "radio"}" name="answer" ${selected.includes(l) ? "checked" : ""} ${state.quiz.feedback ? "disabled" : ""} onchange="selectAnswer('${l}',this.checked)"><span><strong>${l}.</strong> ${esc(t)}</span></label>`;
+        return `<label class="${cls}"><input type="${q.type === "multiple" ? "checkbox" : "radio"}" name="answer" ${selected.includes(l) ? "checked" : ""} onchange="selectAnswer('${l}',this.checked)"><span><strong>${l}.</strong> ${esc(t)}</span></label>`;
       }).join("")}</div>
-      ${state.quiz.feedback ? feedbackHtml(state.quiz.feedback) : `<button class="btn" onclick="submitAnswer()">提交答案</button>`}
-      ${state.quiz.feedback ? `<div class="actions"><button class="btn" onclick="nextQuestion()">下一题</button><button class="btn ghost" onclick="singleInsight(${q.id})">提炼本题考点</button></div>` : ""}
+      ${state.quiz.feedback ? feedbackHtml(state.quiz.feedback) : ""}
+      <div class="actions">
+        <button class="btn secondary" onclick="previousQuestion()" ${previousDisabled}>上一题</button>
+        ${state.quiz.feedback ? `<button class="btn" onclick="nextQuestion()">下一题</button><button class="btn ghost" onclick="singleInsight(${q.id})">提炼本题考点</button>` : `<button class="btn" onclick="submitAnswer()">提交答案</button>`}
+      </div>
     </section>
     ${state.insightText ? `<section class="panel" style="margin-top:14px"><h3>考点提炼</h3><div class="note-box">${esc(state.insightText)}</div></section>` : ""}`;
 }
@@ -317,7 +390,7 @@ function feedbackHtml(fb) {
 
 function renderReview() {
   const due = stats().dueQuestions;
-  return `<div class="topline"><h2>今日复习</h2><button class="btn" onclick="startDueQuiz()">开始复习</button></div><section class="panel">${due.length ? questionTable(due) : `<div class="empty">今天暂无到期复习题。</div>`}</section>`;
+  return `<div class="topline"><h2>今日复习</h2><button class="btn" onclick="startDueQuiz()">开始复习</button></div><section class="panel">${due.length ? questionTable(due) : `<div class="empty">当前暂无可复习错题。</div>`}</section>`;
 }
 
 function renderWrongbook() {
@@ -415,7 +488,8 @@ function startPractice() {
   else pool = BANK;
   pool = shuffle(pool).slice(0, state.practiceCount);
   if (!pool.length) return showError("当前模式下暂无可抽取题目。");
-  state.quiz = { mode: state.practiceMode, questions: pool, index: 0, selected: pool[0].type === "multiple" ? [] : "", feedback: null };
+  state.quiz = { mode: state.practiceMode, questions: pool, index: 0, selected: pool[0].type === "multiple" ? [] : "", feedback: null, answerStates: {} };
+  saveCurrentQuizStep({ selected: state.quiz.selected, feedback: null, insightText: "" });
   state.insightText = "";
   savePracticeState();
   render();
@@ -429,7 +503,7 @@ function startDueQuiz() {
 }
 
 function selectAnswer(letter, checked) {
-  if (state.quiz.feedback) return;
+  const previousFeedback = state.quiz.feedback;
   const q = state.quiz.questions[state.quiz.index];
   if (q.type === "multiple") {
     const selected = new Set(state.quiz.selected || []);
@@ -438,7 +512,13 @@ function selectAnswer(letter, checked) {
   } else {
     state.quiz.selected = letter;
   }
+  if (previousFeedback) {
+    state.quiz.feedback = null;
+    state.insightText = "";
+  }
+  saveCurrentQuizStep({ selected: state.quiz.selected, feedback: state.quiz.feedback, insightText: state.insightText });
   savePracticeState();
+  if (previousFeedback) render();
 }
 
 function submitAnswer() {
@@ -447,48 +527,81 @@ function submitAnswer() {
   if (!selected.length) return showError("请先选择答案。");
   const correct = selected.join(",") === q.answerLetters.join(",");
   const data = userData();
-  data.records.push({ questionId: q.id, selected, correct, mode: state.quiz.mode, answeredAt: new Date().toISOString() });
-  const current = data.states[q.id] || { totalAttempts: 0, correctCount: 0, wrongCount: 0, consecutiveCorrect: 0, reviewIntervalHours: 0 };
-  current.totalAttempts += 1;
-  current.correctCount += correct ? 1 : 0;
-  current.wrongCount += correct ? 0 : 1;
-  current.lastAnswerAt = new Date().toISOString();
-  if (correct) {
-    current.consecutiveCorrect += 1;
-    if (current.wrongCount > 0) {
-      if (current.consecutiveCorrect >= 3) {
-        current.masteredAt = new Date().toISOString();
-        current.nextReviewAt = null;
-      } else if (current.consecutiveCorrect >= 2) {
-        current.reviewIntervalHours = 15 * 24;
-        current.nextReviewAt = addHours(current.reviewIntervalHours);
-      } else {
-        current.reviewIntervalHours = 7 * 24;
-        current.nextReviewAt = addHours(current.reviewIntervalHours);
-      }
-    }
-  } else {
-    current.consecutiveCorrect = 0;
-    current.masteredAt = null;
-    if (!current.wrongCount || current.wrongCount === 1) current.reviewIntervalHours = 24;
-    else if (!current.reviewIntervalHours || current.reviewIntervalHours > 72) current.reviewIntervalHours = 6;
-    else if (current.reviewIntervalHours <= 6) current.reviewIntervalHours = 24;
-    else current.reviewIntervalHours = 72;
-    current.nextReviewAt = addHours(current.reviewIntervalHours);
-  }
-  data.states[q.id] = current;
+  const step = ensureQuizState() || {};
+  const answeredAt = new Date().toISOString();
+  const record = {
+    id: step.recordId || makeRecordId(),
+    questionId: q.id,
+    selected,
+    correct,
+    mode: state.quiz.mode,
+    answeredAt,
+  };
+  const idx = data.records.findIndex((r) => r.id && r.id === record.id);
+  if (idx >= 0) data.records[idx] = record;
+  else data.records.push(record);
+  const current = recomputeQuestionState(data, q.id);
   saveUserData(data);
   state.quiz.feedback = { correct, answerLetters: q.answerLetters, answerText: q.answerText, nextReviewAt: current.nextReviewAt };
+  saveCurrentQuizStep({ selected: state.quiz.selected, feedback: state.quiz.feedback, recordId: record.id, insightText: state.insightText });
   state.error = "";
   savePracticeState();
   render();
 }
 
-function addHours(hours) {
-  return new Date(Date.now() + hours * 3600 * 1000).toISOString();
+function makeRecordId() {
+  return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function recomputeQuestionState(data, questionId) {
+  const records = data.records
+    .filter((r) => Number(r.questionId) === Number(questionId))
+    .sort((a, b) => new Date(a.answeredAt) - new Date(b.answeredAt));
+  if (!records.length) {
+    delete data.states[questionId];
+    return { nextReviewAt: null };
+  }
+  const totalAttempts = records.length;
+  const correctCount = records.filter((r) => r.correct).length;
+  const wrongCount = records.filter((r) => !r.correct).length;
+  const last = records.at(-1);
+  let consecutiveCorrect = 0;
+  for (let i = records.length - 1; i >= 0 && records[i].correct; i--) consecutiveCorrect += 1;
+
+  let reviewIntervalHours = 0;
+  let nextReviewAt = null;
+  let masteredAt = null;
+  if (wrongCount > 0) {
+    if (last.correct) {
+      if (consecutiveCorrect >= 3) masteredAt = last.answeredAt;
+      else {
+        reviewIntervalHours = consecutiveCorrect >= 2 ? 15 * 24 : 7 * 24;
+        nextReviewAt = addHoursFrom(last.answeredAt, reviewIntervalHours);
+      }
+    } else {
+      nextReviewAt = last.answeredAt;
+    }
+  }
+  const current = {
+    totalAttempts,
+    correctCount,
+    wrongCount,
+    consecutiveCorrect,
+    lastAnswerAt: last.answeredAt,
+    nextReviewAt,
+    reviewIntervalHours,
+    masteredAt,
+  };
+  data.states[questionId] = current;
+  return current;
+}
+
+function addHoursFrom(value, hours) {
+  return new Date(new Date(value).getTime() + hours * 3600 * 1000).toISOString();
 }
 
 function nextQuestion() {
+  saveCurrentQuizStep({ selected: state.quiz.selected, feedback: state.quiz.feedback, insightText: state.insightText });
   if (state.quiz.index >= state.quiz.questions.length - 1) {
     state.quiz = null;
     state.view = "stats";
@@ -497,10 +610,16 @@ function nextQuestion() {
     return;
   }
   state.quiz.index += 1;
-  const q = state.quiz.questions[state.quiz.index];
-  state.quiz.selected = q.type === "multiple" ? [] : "";
-  state.quiz.feedback = null;
-  state.insightText = "";
+  restoreQuizStep();
+  savePracticeState();
+  render();
+}
+
+function previousQuestion() {
+  if (!state.quiz || state.quiz.index <= 0) return;
+  saveCurrentQuizStep({ selected: state.quiz.selected, feedback: state.quiz.feedback, insightText: state.insightText });
+  state.quiz.index -= 1;
+  restoreQuizStep();
   savePracticeState();
   render();
 }
@@ -521,6 +640,7 @@ function note(q, wrongCount = 0) {
 function singleInsight(id) {
   const s = userData().states[id];
   state.insightText = note(questionById(id), s?.wrongCount || 0);
+  if (state.quiz) saveCurrentQuizStep({ insightText: state.insightText });
   savePracticeState();
   render();
 }
@@ -568,6 +688,7 @@ window.startDueQuiz = startDueQuiz;
 window.selectAnswer = selectAnswer;
 window.submitAnswer = submitAnswer;
 window.nextQuestion = nextQuestion;
+window.previousQuestion = previousQuestion;
 window.endQuiz = endQuiz;
 window.singleInsight = singleInsight;
 window.batchInsight = batchInsight;
