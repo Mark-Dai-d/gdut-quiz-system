@@ -3,6 +3,7 @@ const STORAGE = {
   users: "szzq_static_users_v1",
   session: "szzq_static_session_v1",
   userData: (username) => `szzq_static_data_v1_${username}`,
+  practice: (username) => `szzq_static_practice_v1_${username}`,
 };
 
 const state = {
@@ -78,6 +79,30 @@ function saveUserData(data, username = state.user?.username) {
   writeJson(STORAGE.userData(username), data);
 }
 
+function savePracticeState() {
+  if (!state.user) return;
+  writeJson(STORAGE.practice(state.user.username), {
+    practiceMode: state.practiceMode,
+    practiceCount: state.practiceCount,
+    selectedChapters: [...state.selectedChapters],
+    quiz: state.quiz,
+    insightText: state.insightText,
+  });
+}
+
+function loadPracticeState(username = state.user?.username) {
+  if (!username) return;
+  const saved = readJson(STORAGE.practice(username), null);
+  if (!saved) return;
+  if (saved.practiceMode) state.practiceMode = saved.practiceMode;
+  if (saved.practiceCount) state.practiceCount = saved.practiceCount;
+  if (Array.isArray(saved.selectedChapters)) {
+    state.selectedChapters = new Set(saved.selectedChapters.map(String));
+  }
+  state.quiz = saved.quiz || null;
+  state.insightText = saved.insightText || "";
+}
+
 function init() {
   state.chapters = [...new Map(BANK.map((q) => [q.chapterId, q.chapter])).entries()].map(([id, title]) => ({
     id,
@@ -87,6 +112,7 @@ function init() {
   const session = readJson(STORAGE.session, null);
   if (session && users().some((u) => u.username === session.username)) {
     state.user = { username: session.username, isAdmin: session.username === "admin" };
+    loadPracticeState(session.username);
   }
   render();
 }
@@ -242,7 +268,7 @@ function renderPractice() {
         <h3>刷题模式</h3>
         <div class="segmented">${modeButton("chapter", "章节专项")}${modeButton("random", "全真随机")}${modeButton("wrong", "错题专项")}${modeButton("review", "今日复习")}</div>
         <h3>题量</h3>
-        <div class="segmented">${[5, 10, 20].map((n) => `<button class="${state.practiceCount === n ? "active" : ""}" onclick="state.practiceCount=${n};render()">${n} 题</button>`).join("")}</div>
+        <div class="segmented">${[5, 10, 20].map((n) => `<button class="${state.practiceCount === n ? "active" : ""}" onclick="setPracticeCount(${n})">${n} 题</button>`).join("")}</div>
         ${state.practiceMode === "chapter" ? `<h3>章节选择</h3>${chapterCheckboxes()}` : ""}
         <div class="actions" style="margin-top:16px"><button class="btn" onclick="startPractice()">开始本轮刷题</button></div>
       </section>
@@ -251,7 +277,7 @@ function renderPractice() {
 }
 
 function modeButton(mode, label) {
-  return `<button class="${state.practiceMode === mode ? "active" : ""}" onclick="state.practiceMode='${mode}';render()">${label}</button>`;
+  return `<button class="${state.practiceMode === mode ? "active" : ""}" onclick="setPracticeMode('${mode}')">${label}</button>`;
 }
 
 function chapterCheckboxes() {
@@ -263,7 +289,7 @@ function renderQuiz() {
   const selected = Array.isArray(state.quiz.selected) ? state.quiz.selected : [state.quiz.selected].filter(Boolean);
   const correct = state.quiz.feedback?.answerLetters || [];
   return `
-    <div class="topline"><h2>${modeName(state.quiz.mode)}</h2><div class="actions"><span class="chapter-chip">${state.quiz.index + 1} / ${state.quiz.questions.length}</span><button class="btn secondary" onclick="state.quiz=null;render()">结束本轮</button></div></div>
+    <div class="topline"><h2>${modeName(state.quiz.mode)}</h2><div class="actions"><span class="chapter-chip">${state.quiz.index + 1} / ${state.quiz.questions.length}</span><button class="btn secondary" onclick="endQuiz()">结束本轮</button></div></div>
     <section class="panel quiz-card">
       <div><span class="chapter-chip">${esc(q.chapter)}</span> <span class="chapter-chip">${q.type === "multiple" ? "多选题" : "单选题"}</span></div>
       <div class="question-text">${esc(q.stem)}</div>
@@ -338,6 +364,7 @@ async function submitAuth() {
   const check = await makePassword(password, found.salt);
   if (check.hash !== found.hash) return showError("密码错误。");
   state.user = { username, isAdmin: username === "admin" };
+  loadPracticeState(username);
   writeJson(STORAGE.session, { username, at: new Date().toISOString() });
   state.error = "";
   render();
@@ -358,13 +385,25 @@ function logout() {
 function go(view) {
   state.view = view;
   state.error = "";
-  state.quiz = null;
+  render();
+}
+
+function setPracticeMode(mode) {
+  state.practiceMode = mode;
+  savePracticeState();
+  render();
+}
+
+function setPracticeCount(count) {
+  state.practiceCount = count;
+  savePracticeState();
   render();
 }
 
 function toggleChapter(id, checked) {
   if (checked) state.selectedChapters.add(String(id));
   else state.selectedChapters.delete(String(id));
+  savePracticeState();
 }
 
 function startPractice() {
@@ -378,12 +417,14 @@ function startPractice() {
   if (!pool.length) return showError("当前模式下暂无可抽取题目。");
   state.quiz = { mode: state.practiceMode, questions: pool, index: 0, selected: pool[0].type === "multiple" ? [] : "", feedback: null };
   state.insightText = "";
+  savePracticeState();
   render();
 }
 
 function startDueQuiz() {
   state.practiceMode = "review";
   state.view = "practice";
+  savePracticeState();
   startPractice();
 }
 
@@ -397,6 +438,7 @@ function selectAnswer(letter, checked) {
   } else {
     state.quiz.selected = letter;
   }
+  savePracticeState();
 }
 
 function submitAnswer() {
@@ -438,6 +480,7 @@ function submitAnswer() {
   saveUserData(data);
   state.quiz.feedback = { correct, answerLetters: q.answerLetters, answerText: q.answerText, nextReviewAt: current.nextReviewAt };
   state.error = "";
+  savePracticeState();
   render();
 }
 
@@ -449,6 +492,7 @@ function nextQuestion() {
   if (state.quiz.index >= state.quiz.questions.length - 1) {
     state.quiz = null;
     state.view = "stats";
+    savePracticeState();
     render();
     return;
   }
@@ -457,6 +501,14 @@ function nextQuestion() {
   state.quiz.selected = q.type === "multiple" ? [] : "";
   state.quiz.feedback = null;
   state.insightText = "";
+  savePracticeState();
+  render();
+}
+
+function endQuiz() {
+  state.quiz = null;
+  state.insightText = "";
+  savePracticeState();
   render();
 }
 
@@ -469,6 +521,7 @@ function note(q, wrongCount = 0) {
 function singleInsight(id) {
   const s = userData().states[id];
   state.insightText = note(questionById(id), s?.wrongCount || 0);
+  savePracticeState();
   render();
 }
 
@@ -481,6 +534,7 @@ function batchInsight() {
     items.forEach((q) => (grouped[q.chapter] ||= []).push(q));
     state.insightText = Object.entries(grouped).map(([chapter, qs]) => `## ${chapter}\n${qs.map((q) => `- ${note(q, q.wrongCount)}`).join("\n")}`).join("\n\n");
   }
+  savePracticeState();
   render();
 }
 
@@ -507,11 +561,14 @@ window.submitAuth = submitAuth;
 window.logout = logout;
 window.go = go;
 window.toggleChapter = toggleChapter;
+window.setPracticeMode = setPracticeMode;
+window.setPracticeCount = setPracticeCount;
 window.startPractice = startPractice;
 window.startDueQuiz = startDueQuiz;
 window.selectAnswer = selectAnswer;
 window.submitAnswer = submitAnswer;
 window.nextQuestion = nextQuestion;
+window.endQuiz = endQuiz;
 window.singleInsight = singleInsight;
 window.batchInsight = batchInsight;
 window.exportWrongbook = exportWrongbook;
