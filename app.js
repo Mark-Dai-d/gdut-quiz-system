@@ -18,6 +18,7 @@ const state = {
   customPracticeCount: null,
   selectedChapters: new Set(["0"]),
   insightText: "",
+  noteEditorId: null,
 };
 
 const nav = [
@@ -73,6 +74,7 @@ function userData(username = state.user?.username) {
     records: [],
     states: {},
     favorites: [],
+    notes: {},
   });
   return migrateUserData(data, username);
 }
@@ -81,10 +83,60 @@ function saveUserData(data, username = state.user?.username) {
   writeJson(STORAGE.userData(username), data);
 }
 
+function questionNote(questionId) {
+  return userData().notes?.[String(questionId)] || null;
+}
+
+function noteText(questionId) {
+  return questionNote(questionId)?.note || "";
+}
+
+function openNoteEditor(questionId) {
+  state.noteEditorId = Number(questionId);
+  render();
+}
+
+function cancelNoteEditor() {
+  state.noteEditorId = null;
+  render();
+}
+
+function saveQuestionNote(questionId) {
+  const input = document.getElementById(`note-editor-${questionId}`);
+  const note = (input?.value || "").trim();
+  if (note.length > 500) return showError("备注最多 500 字。");
+  const data = userData();
+  data.notes ||= {};
+  if (note) {
+    data.notes[String(questionId)] = {
+      questionId: String(questionId),
+      note,
+      updateTime: new Date().toISOString(),
+    };
+  } else {
+    delete data.notes[String(questionId)];
+  }
+  saveUserData(data);
+  state.noteEditorId = null;
+  state.error = "";
+  render();
+}
+
+function deleteQuestionNote(questionId) {
+  const data = userData();
+  data.notes ||= {};
+  delete data.notes[String(questionId)];
+  saveUserData(data);
+  state.noteEditorId = null;
+  state.error = "";
+  render();
+}
+
 function migrateUserData(data, username = state.user?.username) {
   data.records ||= [];
   data.states ||= {};
   data.favorites ||= [];
+  data.notes ||= {};
   let changed = false;
   const corrected = questionById(380);
   if (corrected) {
@@ -434,10 +486,11 @@ function renderQuiz() {
       ${state.quiz.feedback ? feedbackHtml(state.quiz.feedback) : ""}
       <div class="actions">
         <button class="btn secondary" onclick="previousQuestion()" ${previousDisabled}>上一题</button>
-        ${state.quiz.feedback ? `<button class="btn" onclick="nextQuestion()">下一题</button><button class="btn ghost" onclick="singleInsight(${q.id})">提炼本题考点</button>` : `<button class="btn" onclick="submitAnswer()">提交答案</button>`}
+        ${state.quiz.feedback ? `<button class="btn" onclick="nextQuestion()">下一题</button><button class="btn ghost" onclick="singleInsight(${q.id})">提炼本题考点</button>${noteActionButton(q.id)}` : `<button class="btn" onclick="submitAnswer()">提交答案</button>`}
       </div>
     </section>
-    ${state.insightText ? `<section class="panel" style="margin-top:14px"><h3>考点提炼</h3><div class="note-box">${esc(state.insightText)}</div></section>` : ""}`;
+    ${state.insightText ? `<section class="panel" style="margin-top:14px"><h3>考点提炼</h3><div class="note-box">${esc(state.insightText)}</div></section>` : ""}
+    ${state.quiz.feedback || state.noteEditorId === Number(q.id) ? personalNoteHtml(q) : ""}`;
 }
 
 function modeName(mode) {
@@ -446,6 +499,41 @@ function modeName(mode) {
 
 function feedbackHtml(fb) {
   return `<div class="feedback ${fb.correct ? "good" : "bad"}">${fb.correct ? "回答正确" : `回答错误，正确答案：${esc(fb.answerLetters.join(","))} ${esc(fb.answerText)}`}${fb.nextReviewAt ? `<br>下次复习：${dateText(fb.nextReviewAt)}` : ""}</div>`;
+}
+
+function noteActionButton(questionId) {
+  return `<button class="btn ghost" onclick="openNoteEditor(${questionId})">${noteText(questionId) ? "编辑备注" : "添加备注"}</button>`;
+}
+
+function personalNoteHtml(q) {
+  const saved = questionNote(q.id);
+  const editing = state.noteEditorId === Number(q.id);
+  if (!editing && !saved?.note) return "";
+  return `<section class="panel personal-note-section" style="margin-top:14px">
+    <h3>我的备注</h3>
+    ${editing ? noteEditorHtml(q.id, saved?.note || "") : `<div class="personal-note">${esc(saved.note)}</div><div class="note-meta">更新于 ${dateText(saved.updateTime)}</div>`}
+  </section>`;
+}
+
+function noteEditorHtml(questionId, value) {
+  return `<div class="note-editor">
+    <textarea id="note-editor-${questionId}" maxlength="500" rows="5" placeholder="写下你的知识点总结、易错提醒或解题技巧，最多 500 字。">${esc(value)}</textarea>
+    <div class="note-tools">
+      <span class="muted">最多 500 字</span>
+      <div class="actions">
+        <button class="btn" onclick="saveQuestionNote(${questionId})">保存</button>
+        <button class="btn secondary" onclick="cancelNoteEditor()">取消</button>
+        ${value ? `<button class="btn danger" onclick="deleteQuestionNote(${questionId})">删除</button>` : ""}
+      </div>
+    </div>
+  </div>`;
+}
+
+function noteCellHtml(q) {
+  const saved = questionNote(q.id);
+  const editing = state.noteEditorId === Number(q.id);
+  if (editing) return noteEditorHtml(q.id, saved?.note || "");
+  return `<div class="note-cell">${saved?.note ? `<div class="personal-note compact">${esc(saved.note)}</div><div class="note-meta">${dateText(saved.updateTime)}</div>` : `<span class="muted">暂无备注</span>`}<div style="margin-top:8px">${noteActionButton(q.id)}</div></div>`;
 }
 
 function renderReview() {
@@ -459,11 +547,11 @@ function renderWrongbook() {
 }
 
 function wrongTable(items) {
-  return `<table><thead><tr><th>题目</th><th>答案</th><th>错误次数</th><th>复习计划</th><th>操作</th></tr></thead><tbody>${items.map((q) => `<tr><td><span class="chapter-chip">${esc(q.chapter)}</span><br>${esc(q.stem)}</td><td>${esc(q.answerLetters.join(","))} ${esc(q.answerText)}</td><td>${q.wrongCount}</td><td>上次：${dateText(q.lastAnswerAt)}<br>下次：${dateText(q.nextReviewAt)}<br>连续答对：${q.consecutiveCorrect}</td><td><button class="btn ghost" onclick="singleInsight(${q.id})">考点</button></td></tr>`).join("")}</tbody></table>`;
+  return `<table><thead><tr><th>题目</th><th>答案</th><th>错误次数</th><th>复习计划</th><th>备注</th><th>操作</th></tr></thead><tbody>${items.map((q) => `<tr><td><span class="chapter-chip">${esc(q.chapter)}</span><br>${esc(q.stem)}</td><td>${esc(q.answerLetters.join(","))} ${esc(q.answerText)}</td><td>${q.wrongCount}</td><td>上次：${dateText(q.lastAnswerAt)}<br>下次：${dateText(q.nextReviewAt)}<br>连续答对：${q.consecutiveCorrect}</td><td>${noteCellHtml(q)}</td><td><button class="btn ghost" onclick="singleInsight(${q.id})">考点</button></td></tr>`).join("")}</tbody></table>`;
 }
 
 function questionTable(items) {
-  return `<table><thead><tr><th>章节</th><th>题干</th></tr></thead><tbody>${items.map((q) => `<tr><td>${esc(q.chapter)}</td><td>${esc(q.stem)}</td></tr>`).join("")}</tbody></table>`;
+  return `<table><thead><tr><th>章节</th><th>题干</th><th>备注</th></tr></thead><tbody>${items.map((q) => `<tr><td>${esc(q.chapter)}</td><td>${esc(q.stem)}</td><td>${noteCellHtml(q)}</td></tr>`).join("")}</tbody></table>`;
 }
 
 function renderStats() {
@@ -512,6 +600,7 @@ function logout() {
   localStorage.removeItem(STORAGE.session);
   state.user = null;
   state.quiz = null;
+  state.noteEditorId = null;
   render();
 }
 
@@ -757,7 +846,7 @@ function exportWrongbook() {
 
 function resetMine() {
   if (!confirm("确认清空当前账号学习数据？")) return;
-  saveUserData({ records: [], states: {}, favorites: [] });
+  saveUserData({ records: [], states: {}, favorites: [], notes: {} });
   render();
 }
 
@@ -771,6 +860,10 @@ window.setPracticeCount = setPracticeCount;
 window.sanitizeCustomCountInput = sanitizeCustomCountInput;
 window.applyCustomPracticeCount = applyCustomPracticeCount;
 window.fillAllPracticeCount = fillAllPracticeCount;
+window.openNoteEditor = openNoteEditor;
+window.cancelNoteEditor = cancelNoteEditor;
+window.saveQuestionNote = saveQuestionNote;
+window.deleteQuestionNote = deleteQuestionNote;
 window.startPractice = startPractice;
 window.startDueQuiz = startDueQuiz;
 window.selectAnswer = selectAnswer;
