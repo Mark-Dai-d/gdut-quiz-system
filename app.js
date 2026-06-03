@@ -15,6 +15,7 @@ const state = {
   quiz: null,
   practiceMode: "chapter",
   practiceCount: 10,
+  customPracticeCount: null,
   selectedChapters: new Set(["0"]),
   insightText: "",
 };
@@ -106,6 +107,7 @@ function savePracticeState() {
   writeJson(STORAGE.practice(state.user.username), {
     practiceMode: state.practiceMode,
     practiceCount: state.practiceCount,
+    customPracticeCount: state.customPracticeCount,
     selectedChapters: [...state.selectedChapters],
     quiz: state.quiz,
     insightText: state.insightText,
@@ -118,6 +120,7 @@ function loadPracticeState(username = state.user?.username) {
   if (!saved) return;
   if (saved.practiceMode) state.practiceMode = saved.practiceMode;
   if (saved.practiceCount) state.practiceCount = saved.practiceCount;
+  state.customPracticeCount = Number.isInteger(saved.customPracticeCount) && saved.customPracticeCount > 0 ? saved.customPracticeCount : null;
   if (Array.isArray(saved.selectedChapters)) {
     state.selectedChapters = new Set(saved.selectedChapters.map(String));
   }
@@ -355,6 +358,35 @@ function topWrongList(items) {
   return `<table><thead><tr><th>题目</th><th>错次</th></tr></thead><tbody>${items.map((q) => `<tr><td><span class="chapter-chip">${esc(q.chapter)}</span><br>${esc(q.stem)}</td><td>${q.wrong_count}</td></tr>`).join("")}</tbody></table>`;
 }
 
+function practicePool() {
+  const s = stats();
+  if (state.practiceMode === "chapter") return BANK.filter((q) => state.selectedChapters.has(String(q.chapterId)));
+  if (state.practiceMode === "wrong") return s.wrongbook;
+  if (state.practiceMode === "review") return s.dueQuestions;
+  return BANK;
+}
+
+function selectedPracticeTotal() {
+  return practicePool().length;
+}
+
+function effectivePracticeCount() {
+  return state.customPracticeCount || state.practiceCount;
+}
+
+function countControls() {
+  const total = selectedPracticeTotal();
+  const customText = state.customPracticeCount ? ` · 本轮自定义 ${state.customPracticeCount} 题` : "";
+  return `
+        <div class="segmented count-controls">
+          ${[5, 10, 20].map((n) => `<button class="${state.customPracticeCount === null && state.practiceCount === n ? "active" : ""}" onclick="setPracticeCount(${n})">${n} 题</button>`).join("")}
+          <input id="custom-count" class="custom-count" inputmode="numeric" pattern="[0-9]*" min="1" placeholder="自定义" value="${state.customPracticeCount || ""}" oninput="sanitizeCustomCountInput(this)" onkeydown="if(event.key==='Enter')applyCustomPracticeCount()">
+          <button onclick="applyCustomPracticeCount()">确定</button>
+          <button onclick="fillAllPracticeCount()">全部题目</button>
+        </div>
+        <p class="hint">当前模式可用题量：${total} 题${customText}</p>`;
+}
+
 function renderPractice() {
   if (state.quiz) return renderQuiz();
   return `
@@ -364,7 +396,7 @@ function renderPractice() {
         <h3>刷题模式</h3>
         <div class="segmented">${modeButton("chapter", "章节专项")}${modeButton("random", "全真随机")}${modeButton("wrong", "错题专项")}${modeButton("review", "今日复习")}</div>
         <h3>题量</h3>
-        <div class="segmented">${[5, 10, 20].map((n) => `<button class="${state.practiceCount === n ? "active" : ""}" onclick="setPracticeCount(${n})">${n} 题</button>`).join("")}</div>
+        ${countControls()}
         ${state.practiceMode === "chapter" ? `<h3>章节选择</h3>${chapterCheckboxes()}` : ""}
         <div class="actions" style="margin-top:16px"><button class="btn" onclick="startPractice()">开始本轮刷题</button></div>
       </section>
@@ -497,6 +529,34 @@ function setPracticeMode(mode) {
 
 function setPracticeCount(count) {
   state.practiceCount = count;
+  state.customPracticeCount = null;
+  savePracticeState();
+  render();
+}
+
+function sanitizeCustomCountInput(input) {
+  input.value = input.value.replace(/[^\d]/g, "");
+}
+
+function applyCustomPracticeCount() {
+  const input = document.getElementById("custom-count");
+  const count = Number(input?.value || "");
+  if (!Number.isInteger(count) || count < 1) return showError("请输入大于等于 1 的正整数题量。");
+  const total = selectedPracticeTotal();
+  if (count > total) return showError(`所选章节总题量为 ${total}，不可超出`);
+  state.practiceCount = count;
+  state.customPracticeCount = count;
+  state.error = "";
+  savePracticeState();
+  render();
+}
+
+function fillAllPracticeCount() {
+  const total = selectedPracticeTotal();
+  if (!total) return showError("当前模式下暂无可用题目。");
+  state.practiceCount = total;
+  state.customPracticeCount = total;
+  state.error = "";
   savePracticeState();
   render();
 }
@@ -508,13 +568,10 @@ function toggleChapter(id, checked) {
 }
 
 function startPractice() {
-  let pool = [];
-  const s = stats();
-  if (state.practiceMode === "chapter") pool = BANK.filter((q) => state.selectedChapters.has(String(q.chapterId)));
-  else if (state.practiceMode === "wrong") pool = s.wrongbook;
-  else if (state.practiceMode === "review") pool = s.dueQuestions;
-  else pool = BANK;
-  pool = shuffle(pool).slice(0, state.practiceCount);
+  const total = selectedPracticeTotal();
+  const count = effectivePracticeCount();
+  if (count > total) return showError(`所选章节总题量为 ${total}，不可超出`);
+  let pool = shuffle(practicePool()).slice(0, count);
   if (!pool.length) return showError("当前模式下暂无可抽取题目。");
   state.quiz = { mode: state.practiceMode, questions: pool, index: 0, selected: pool[0].type === "multiple" ? [] : "", feedback: null, answerStates: {} };
   saveCurrentQuizStep({ selected: state.quiz.selected, feedback: null, insightText: "" });
@@ -711,6 +768,9 @@ window.go = go;
 window.toggleChapter = toggleChapter;
 window.setPracticeMode = setPracticeMode;
 window.setPracticeCount = setPracticeCount;
+window.sanitizeCustomCountInput = sanitizeCustomCountInput;
+window.applyCustomPracticeCount = applyCustomPracticeCount;
+window.fillAllPracticeCount = fillAllPracticeCount;
 window.startPractice = startPractice;
 window.startDueQuiz = startDueQuiz;
 window.selectAnswer = selectAnswer;
