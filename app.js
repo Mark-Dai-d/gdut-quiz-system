@@ -16,16 +16,21 @@ const state = {
   practiceMode: "chapter",
   practiceCount: 10,
   customPracticeCount: null,
+  favoriteOnly: false,
   selectedChapters: new Set(["0"]),
   insightText: "",
   noteEditorId: null,
+  toast: "",
 };
+
+let toastTimer = null;
 
 const nav = [
   ["dashboard", "首页看板"],
   ["practice", "刷题训练"],
   ["review", "今日复习"],
   ["wrongbook", "错题本"],
+  ["favorites", "我的收藏"],
   ["stats", "学习统计"],
   ["insights", "考点提炼"],
   ["admin", "本地管理"],
@@ -83,6 +88,76 @@ function saveUserData(data, username = state.user?.username) {
   writeJson(STORAGE.userData(username), data);
 }
 
+function normalizeFavorites(items) {
+  const seen = new Set();
+  return (items || [])
+    .map((item) => {
+      const questionId = String(typeof item === "object" ? item.questionId : item);
+      const createdAt = typeof item === "object" && item.createdAt ? item.createdAt : new Date().toISOString();
+      return { questionId, createdAt };
+    })
+    .filter((item) => {
+      const id = Number(item.questionId);
+      if (!id || seen.has(id) || !questionById(id)) return false;
+      seen.add(id);
+      return true;
+    });
+}
+
+function favoriteSet(data = userData()) {
+  return new Set(normalizeFavorites(data.favorites).map((item) => Number(item.questionId)));
+}
+
+function favoriteEntry(questionId) {
+  return normalizeFavorites(userData().favorites).find((item) => Number(item.questionId) === Number(questionId)) || null;
+}
+
+function isFavorited(questionId) {
+  return favoriteSet().has(Number(questionId));
+}
+
+function favoriteQuestions() {
+  const data = userData();
+  return normalizeFavorites(data.favorites)
+    .map((item) => ({ ...questionById(item.questionId), favoriteCreatedAt: item.createdAt }))
+    .filter((q) => q.id)
+    .sort((a, b) => a.chapterId - b.chapterId || a.id - b.id);
+}
+
+function toggleFavorite(questionId) {
+  const data = userData();
+  const items = normalizeFavorites(data.favorites);
+  const index = items.findIndex((item) => Number(item.questionId) === Number(questionId));
+  let message = "已收藏";
+  if (index >= 0) {
+    items.splice(index, 1);
+    message = "取消收藏";
+  } else {
+    items.push({ questionId: String(questionId), createdAt: new Date().toISOString() });
+  }
+  data.favorites = items;
+  saveUserData(data);
+  showToast(message);
+}
+
+function clearAllFavorites() {
+  if (!confirm("确认批量取消全部收藏题目？")) return;
+  const data = userData();
+  data.favorites = [];
+  saveUserData(data);
+  showToast("已取消全部收藏");
+}
+
+function showToast(message) {
+  state.toast = message;
+  render();
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    state.toast = "";
+    render();
+  }, 1600);
+}
+
 function questionNote(questionId) {
   return userData().notes?.[String(questionId)] || null;
 }
@@ -138,6 +213,11 @@ function migrateUserData(data, username = state.user?.username) {
   data.favorites ||= [];
   data.notes ||= {};
   let changed = false;
+  const normalizedFavorites = normalizeFavorites(data.favorites);
+  if (JSON.stringify(data.favorites) !== JSON.stringify(normalizedFavorites)) {
+    data.favorites = normalizedFavorites;
+    changed = true;
+  }
   const corrected = questionById(380);
   if (corrected) {
     data.records.forEach((record) => {
@@ -160,6 +240,7 @@ function savePracticeState() {
     practiceMode: state.practiceMode,
     practiceCount: state.practiceCount,
     customPracticeCount: state.customPracticeCount,
+    favoriteOnly: state.favoriteOnly,
     selectedChapters: [...state.selectedChapters],
     quiz: state.quiz,
     insightText: state.insightText,
@@ -173,6 +254,7 @@ function loadPracticeState(username = state.user?.username) {
   if (saved.practiceMode) state.practiceMode = saved.practiceMode;
   if (saved.practiceCount) state.practiceCount = saved.practiceCount;
   state.customPracticeCount = Number.isInteger(saved.customPracticeCount) && saved.customPracticeCount > 0 ? saved.customPracticeCount : null;
+  state.favoriteOnly = Boolean(saved.favoriteOnly);
   if (Array.isArray(saved.selectedChapters)) {
     state.selectedChapters = new Set(saved.selectedChapters.map(String));
   }
@@ -367,7 +449,7 @@ function renderApp() {
           <button class="btn secondary" style="margin-top:10px;width:100%" onclick="logout()">退出登录</button>
         </div>
       </aside>
-      <main class="main">${state.error ? `<div class="error">${esc(state.error)}</div>` : ""}${renderView()}</main>
+      <main class="main">${state.error ? `<div class="error">${esc(state.error)}</div>` : ""}${renderView()}${state.toast ? `<div class="toast">${esc(state.toast)}</div>` : ""}</main>
     </div>`;
 }
 
@@ -375,6 +457,7 @@ function renderView() {
   if (state.view === "practice") return renderPractice();
   if (state.view === "review") return renderReview();
   if (state.view === "wrongbook") return renderWrongbook();
+  if (state.view === "favorites") return renderFavorites();
   if (state.view === "stats") return renderStats();
   if (state.view === "insights") return renderInsights();
   if (state.view === "admin") return renderAdmin();
@@ -412,10 +495,12 @@ function topWrongList(items) {
 
 function practicePool() {
   const s = stats();
-  if (state.practiceMode === "chapter") return BANK.filter((q) => state.selectedChapters.has(String(q.chapterId)));
-  if (state.practiceMode === "wrong") return s.wrongbook;
-  if (state.practiceMode === "review") return s.dueQuestions;
-  return BANK;
+  let pool = BANK;
+  if (state.practiceMode === "chapter") pool = BANK.filter((q) => state.selectedChapters.has(String(q.chapterId)));
+  else if (state.practiceMode === "wrong") pool = s.wrongbook;
+  else if (state.practiceMode === "review") pool = s.dueQuestions;
+  if (state.favoriteOnly) pool = pool.filter((q) => isFavorited(q.id));
+  return pool;
 }
 
 function selectedPracticeTotal() {
@@ -439,6 +524,10 @@ function countControls() {
         <p class="hint">当前模式可用题量：${total} 题${customText}</p>`;
 }
 
+function favoriteOnlyControl() {
+  return `<label class="switch-row"><input type="checkbox" ${state.favoriteOnly ? "checked" : ""} onchange="setFavoriteOnly(this.checked)"><span>只看收藏题目</span></label>`;
+}
+
 function renderPractice() {
   if (state.quiz) return renderQuiz();
   return `
@@ -447,6 +536,7 @@ function renderPractice() {
       <section class="panel">
         <h3>刷题模式</h3>
         <div class="segmented">${modeButton("chapter", "章节专项")}${modeButton("random", "全真随机")}${modeButton("wrong", "错题专项")}${modeButton("review", "今日复习")}</div>
+        ${favoriteOnlyControl()}
         <h3>题量</h3>
         ${countControls()}
         ${state.practiceMode === "chapter" ? `<h3>章节选择</h3>${chapterCheckboxes()}` : ""}
@@ -486,15 +576,16 @@ function renderQuiz() {
       ${state.quiz.feedback ? feedbackHtml(state.quiz.feedback) : ""}
       <div class="actions">
         <button class="btn secondary" onclick="previousQuestion()" ${previousDisabled}>上一题</button>
-        ${state.quiz.feedback ? `<button class="btn" onclick="nextQuestion()">下一题</button><button class="btn ghost" onclick="singleInsight(${q.id})">提炼本题考点</button>${noteActionButton(q.id)}` : `<button class="btn" onclick="submitAnswer()">提交答案</button>`}
+        ${state.quiz.feedback ? `<button class="btn" onclick="nextQuestion()">下一题</button><button class="btn ghost" onclick="singleInsight(${q.id})">提炼本题考点</button>${favoriteButton(q.id)}${noteActionButton(q.id)}` : `<button class="btn" onclick="submitAnswer()">提交答案</button>`}
       </div>
     </section>
     ${state.insightText ? `<section class="panel" style="margin-top:14px"><h3>考点提炼</h3><div class="note-box">${esc(state.insightText)}</div></section>` : ""}
+    ${state.quiz.feedback ? favoriteStatusHtml(q.id) : ""}
     ${state.quiz.feedback || state.noteEditorId === Number(q.id) ? personalNoteHtml(q) : ""}`;
 }
 
 function modeName(mode) {
-  return { chapter: "章节专项刷题", random: "全真随机刷题", wrong: "错题专项刷题", review: "今日复习刷题" }[mode] || "刷题";
+  return { chapter: "章节专项刷题", random: "全真随机刷题", wrong: "错题专项刷题", review: "今日复习刷题", favorite: "我的收藏刷题" }[mode] || "刷题";
 }
 
 function feedbackHtml(fb) {
@@ -503,6 +594,16 @@ function feedbackHtml(fb) {
 
 function noteActionButton(questionId) {
   return `<button class="btn ghost" onclick="openNoteEditor(${questionId})">${noteText(questionId) ? "编辑备注" : "添加备注"}</button>`;
+}
+
+function favoriteButton(questionId) {
+  const active = isFavorited(questionId);
+  return `<button class="btn ghost favorite-btn ${active ? "active" : ""}" onclick="toggleFavorite(${questionId})" title="${active ? "取消收藏" : "收藏本题"}"><span class="star">${active ? "★" : "☆"}</span> ${active ? "已收藏" : "收藏本题"}</button>`;
+}
+
+function favoriteStatusHtml(questionId) {
+  if (!isFavorited(questionId)) return "";
+  return `<section class="favorite-status" style="margin-top:14px"><span class="star">★</span> 已收藏</section>`;
 }
 
 function personalNoteHtml(q) {
@@ -537,13 +638,32 @@ function noteCellHtml(q) {
 }
 
 function renderReview() {
-  const due = stats().dueQuestions;
-  return `<div class="topline"><h2>今日复习</h2><button class="btn" onclick="startDueQuiz()">开始复习</button></div><section class="panel">${due.length ? questionTable(due) : `<div class="empty">当前暂无可复习错题。</div>`}</section>`;
+  const due = state.favoriteOnly ? stats().dueQuestions.filter((q) => isFavorited(q.id)) : stats().dueQuestions;
+  return `<div class="topline"><h2>今日复习</h2><div class="actions"><button class="btn" onclick="startDueQuiz()">开始复习</button></div></div><section class="panel">${favoriteOnlyControl()}${due.length ? questionTable(due) : `<div class="empty">当前暂无可复习错题。</div>`}</section>`;
 }
 
 function renderWrongbook() {
   const items = stats().wrongbook;
   return `<div class="topline"><h2>错题本</h2><button class="btn" onclick="exportWrongbook()">导出错题 HTML</button></div><section class="panel">${items.length ? wrongTable(items) : `<div class="empty">当前账号还没有错题。</div>`}</section>`;
+}
+
+function renderFavorites() {
+  const items = favoriteQuestions();
+  if (!items.length) {
+    return `<div class="topline"><h2>我的收藏</h2></div><section class="panel"><div class="empty">还没有收藏题目。答题后点击星标即可收藏。</div></section>`;
+  }
+  const grouped = {};
+  items.forEach((q) => (grouped[q.chapter] ||= []).push(q));
+  return `<div class="topline"><h2>我的收藏</h2><button class="btn danger" onclick="clearAllFavorites()">批量取消收藏</button></div>
+    ${Object.entries(grouped)
+      .map(([chapter, qs]) => `<section class="panel" style="margin-top:14px"><h3>${esc(chapter)} <span class="muted">${qs.length} 题</span></h3>${favoriteTable(qs)}</section>`)
+      .join("")}`;
+}
+
+function favoriteTable(items) {
+  return `<table><thead><tr><th>题目</th><th>答案</th><th>备注</th><th>收藏时间</th><th>操作</th></tr></thead><tbody>${items
+    .map((q) => `<tr><td>${esc(q.stem)}</td><td>${esc(q.answerLetters.join(","))} ${esc(q.answerText)}</td><td>${noteCellHtml(q)}</td><td>${dateText(q.favoriteCreatedAt)}</td><td><div class="actions"><button class="btn ghost" onclick="openQuestionById(${q.id})">跳转原题</button><button class="btn ghost" onclick="openNoteEditor(${q.id})">编辑备注</button><button class="btn danger" onclick="toggleFavorite(${q.id})">取消收藏</button></div></td></tr>`)
+    .join("")}</tbody></table>`;
 }
 
 function wrongTable(items) {
@@ -578,7 +698,7 @@ async function submitAuth() {
     const pw = await makePassword(password);
     list.push({ username, ...pw });
     saveUsers(list);
-    saveUserData({ records: [], states: {}, favorites: [] }, username);
+    saveUserData({ records: [], states: {}, favorites: [], notes: {} }, username);
   }
   const found = list.find((u) => u.username === username);
   if (!found) return showError("账号不存在。");
@@ -619,6 +739,12 @@ function setPracticeMode(mode) {
 function setPracticeCount(count) {
   state.practiceCount = count;
   state.customPracticeCount = null;
+  savePracticeState();
+  render();
+}
+
+function setFavoriteOnly(checked) {
+  state.favoriteOnly = Boolean(checked);
   savePracticeState();
   render();
 }
@@ -674,6 +800,17 @@ function startDueQuiz() {
   state.view = "practice";
   savePracticeState();
   startPractice();
+}
+
+function openQuestionById(questionId) {
+  const q = questionById(questionId);
+  if (!q) return showError("未找到该题目。");
+  state.quiz = { mode: "favorite", questions: [q], index: 0, selected: emptySelection(q), feedback: null, answerStates: {} };
+  state.view = "practice";
+  state.insightText = "";
+  saveCurrentQuizStep({ selected: state.quiz.selected, feedback: null, insightText: "" });
+  savePracticeState();
+  render();
 }
 
 function selectAnswer(letter, checked) {
@@ -857,9 +994,13 @@ window.go = go;
 window.toggleChapter = toggleChapter;
 window.setPracticeMode = setPracticeMode;
 window.setPracticeCount = setPracticeCount;
+window.setFavoriteOnly = setFavoriteOnly;
 window.sanitizeCustomCountInput = sanitizeCustomCountInput;
 window.applyCustomPracticeCount = applyCustomPracticeCount;
 window.fillAllPracticeCount = fillAllPracticeCount;
+window.toggleFavorite = toggleFavorite;
+window.clearAllFavorites = clearAllFavorites;
+window.openQuestionById = openQuestionById;
 window.openNoteEditor = openNoteEditor;
 window.cancelNoteEditor = cancelNoteEditor;
 window.saveQuestionNote = saveQuestionNote;
