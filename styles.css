@@ -455,6 +455,55 @@ th {
   padding: 14px;
 }
 
+.personal-note {
+  white-space: pre-wrap;
+  line-height: 1.75;
+  background: #f7f9fc;
+  border-left: 4px solid var(--line);
+  border-radius: 6px;
+  padding: 12px 14px;
+}
+
+.personal-note.compact {
+  max-width: 320px;
+  font-size: 13px;
+  padding: 9px 11px;
+}
+
+.note-meta {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.note-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.note-editor textarea {
+  width: 100%;
+  min-height: 120px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font: inherit;
+  line-height: 1.7;
+}
+
+.note-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.note-cell {
+  min-width: 180px;
+}
+
 .muted {
   color: var(--muted);
 }
