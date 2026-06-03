@@ -313,6 +313,18 @@ button {
   color: white;
 }
 
+.count-controls {
+  align-items: center;
+}
+
+.custom-count {
+  width: 112px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font: inherit;
+}
+
 .chapter-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
