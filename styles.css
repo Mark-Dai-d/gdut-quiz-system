@@ -325,6 +325,20 @@ button {
   font: inherit;
 }
 
+.switch-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 4px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.switch-row input {
+  width: 16px;
+  height: 16px;
+}
+
 .chapter-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -410,6 +424,40 @@ button {
 .feedback.bad {
   color: var(--bad);
   background: var(--bad-bg);
+}
+
+.favorite-btn.active,
+.favorite-status {
+  color: #9a6200;
+}
+
+.star {
+  font-size: 17px;
+  line-height: 1;
+}
+
+.favorite-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  width: fit-content;
+  border: 1px solid #f1d48a;
+  background: #fff7d6;
+  border-radius: 6px;
+  padding: 9px 12px;
+  font-weight: 800;
+}
+
+.toast {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 20;
+  color: white;
+  background: rgba(20, 28, 45, 0.92);
+  border-radius: 8px;
+  padding: 10px 14px;
+  box-shadow: var(--shadow);
 }
 
 table {
