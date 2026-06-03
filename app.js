@@ -3,7 +3,7 @@ const STORAGE = {
   users: "szzq_static_users_v1",
   session: "szzq_static_session_v1",
   userData: (username) => `szzq_static_data_v1_${username}`,
-  practice: (username) => `szzq_static_practice_v1_${username}`,
+  practice: (username) => `szzq_static_practice_v2_${username}`,
 };
 
 const state = {
@@ -68,15 +68,37 @@ function saveUsers(items) {
 }
 
 function userData(username = state.user?.username) {
-  return readJson(STORAGE.userData(username), {
+  const data = readJson(STORAGE.userData(username), {
     records: [],
     states: {},
     favorites: [],
   });
+  return migrateUserData(data, username);
 }
 
 function saveUserData(data, username = state.user?.username) {
   writeJson(STORAGE.userData(username), data);
+}
+
+function migrateUserData(data, username = state.user?.username) {
+  data.records ||= [];
+  data.states ||= {};
+  data.favorites ||= [];
+  let changed = false;
+  const corrected = questionById(380);
+  if (corrected) {
+    data.records.forEach((record) => {
+      if (Number(record.questionId) !== 380) return;
+      const correct = selectedArray(record.selected).join(",") === corrected.answerLetters.join(",");
+      if (record.correct !== correct) {
+        record.correct = correct;
+        changed = true;
+      }
+    });
+    if (changed) recomputeQuestionState(data, 380);
+  }
+  if (changed && username) saveUserData(data, username);
+  return data;
 }
 
 function savePracticeState() {
@@ -126,11 +148,16 @@ function ensureQuizState() {
   const q = state.quiz.questions?.[state.quiz.index];
   if (!q) return null;
   const key = String(state.quiz.index);
+  if (state.quiz.answerStates[key]?.questionId != null && Number(state.quiz.answerStates[key].questionId) !== Number(q.id)) {
+    delete state.quiz.answerStates[key];
+  }
   if (!state.quiz.answerStates[key]) {
+    const hasSavedStep = Object.keys(state.quiz.answerStates).length > 0;
     state.quiz.answerStates[key] = {
-      selected: selectionForQuestion(q, state.quiz.selected ?? emptySelection(q)),
-      feedback: state.quiz.feedback || null,
-      insightText: state.insightText || "",
+      questionId: q.id,
+      selected: hasSavedStep ? emptySelection(q) : selectionForQuestion(q, state.quiz.selected ?? emptySelection(q)),
+      feedback: hasSavedStep ? null : state.quiz.feedback || null,
+      insightText: hasSavedStep ? "" : state.insightText || "",
     };
   }
   return state.quiz.answerStates[key];
@@ -150,6 +177,7 @@ function saveCurrentQuizStep(patch = {}) {
   if (!current) return;
   const q = state.quiz.questions[state.quiz.index];
   const next = { ...current, ...patch };
+  next.questionId = q.id;
   next.selected = selectionForQuestion(q, next.selected ?? state.quiz.selected ?? emptySelection(q));
   state.quiz.answerStates[String(state.quiz.index)] = next;
 }
