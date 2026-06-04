@@ -339,6 +339,15 @@ button {
   height: 16px;
 }
 
+.random-source {
+  margin-top: 12px;
+}
+
+.random-source .segmented button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
 .chapter-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
