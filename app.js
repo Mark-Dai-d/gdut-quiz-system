@@ -14,6 +14,7 @@ const state = {
   chapters: [],
   quiz: null,
   practiceMode: "chapter",
+  randomSource: "all",
   practiceCount: 10,
   customPracticeCount: null,
   favoriteOnly: false,
@@ -238,6 +239,7 @@ function savePracticeState() {
   if (!state.user) return;
   writeJson(STORAGE.practice(state.user.username), {
     practiceMode: state.practiceMode,
+    randomSource: state.randomSource,
     practiceCount: state.practiceCount,
     customPracticeCount: state.customPracticeCount,
     favoriteOnly: state.favoriteOnly,
@@ -252,6 +254,7 @@ function loadPracticeState(username = state.user?.username) {
   const saved = readJson(STORAGE.practice(username), null);
   if (!saved) return;
   if (saved.practiceMode) state.practiceMode = saved.practiceMode;
+  if (saved.randomSource === "unanswered") state.randomSource = "unanswered";
   if (saved.practiceCount) state.practiceCount = saved.practiceCount;
   state.customPracticeCount = Number.isInteger(saved.customPracticeCount) && saved.customPracticeCount > 0 ? saved.customPracticeCount : null;
   state.favoriteOnly = Boolean(saved.favoriteOnly);
@@ -493,12 +496,31 @@ function topWrongList(items) {
   return `<table><thead><tr><th>题目</th><th>错次</th></tr></thead><tbody>${items.map((q) => `<tr><td><span class="chapter-chip">${esc(q.chapter)}</span><br>${esc(q.stem)}</td><td>${q.wrong_count}</td></tr>`).join("")}</tbody></table>`;
 }
 
+function answeredQuestionIds() {
+  return new Set(userData().records.map((record) => Number(record.questionId)).filter(Boolean));
+}
+
+function randomPoolForSource(source = state.randomSource) {
+  let pool = BANK;
+  if (source === "unanswered") {
+    const answered = answeredQuestionIds();
+    pool = pool.filter((q) => !answered.has(Number(q.id)));
+  }
+  if (state.favoriteOnly) pool = pool.filter((q) => isFavorited(q.id));
+  return pool;
+}
+
+function randomSourceCount(source) {
+  return randomPoolForSource(source).length;
+}
+
 function practicePool() {
   const s = stats();
   let pool = BANK;
   if (state.practiceMode === "chapter") pool = BANK.filter((q) => state.selectedChapters.has(String(q.chapterId)));
   else if (state.practiceMode === "wrong") pool = s.wrongbook;
   else if (state.practiceMode === "review") pool = s.dueQuestions;
+  else if (state.practiceMode === "random") return randomPoolForSource();
   if (state.favoriteOnly) pool = pool.filter((q) => isFavorited(q.id));
   return pool;
 }
@@ -528,6 +550,21 @@ function favoriteOnlyControl() {
   return `<label class="switch-row"><input type="checkbox" ${state.favoriteOnly ? "checked" : ""} onchange="setFavoriteOnly(this.checked)"><span>只看收藏题目</span></label>`;
 }
 
+function randomSourceControl() {
+  if (state.practiceMode !== "random") return "";
+  const allCount = randomSourceCount("all");
+  const unansweredCount = randomSourceCount("unanswered");
+  const noUnanswered = unansweredCount === 0;
+  return `<div class="random-source">
+    <h3>随机来源</h3>
+    <div class="segmented">
+      <button class="${state.randomSource === "all" ? "active" : ""}" onclick="setRandomSource('all')">全部题目随机 <span class="muted">${allCount} 题</span></button>
+      <button class="${state.randomSource === "unanswered" ? "active" : ""}" ${noUnanswered ? "disabled" : ""} onclick="setRandomSource('unanswered')">未作答题目随机 <span class="muted">${unansweredCount} 题</span></button>
+    </div>
+    ${noUnanswered ? `<p class="hint">暂无未作答习题，可切换全库随机模式</p>` : ""}
+  </div>`;
+}
+
 function renderPractice() {
   if (state.quiz) return renderQuiz();
   return `
@@ -537,6 +574,7 @@ function renderPractice() {
         <h3>刷题模式</h3>
         <div class="segmented">${modeButton("chapter", "章节专项")}${modeButton("random", "全真随机")}${modeButton("wrong", "错题专项")}${modeButton("review", "今日复习")}</div>
         ${favoriteOnlyControl()}
+        ${randomSourceControl()}
         <h3>题量</h3>
         ${countControls()}
         ${state.practiceMode === "chapter" ? `<h3>章节选择</h3>${chapterCheckboxes()}` : ""}
@@ -736,6 +774,16 @@ function setPracticeMode(mode) {
   render();
 }
 
+function setRandomSource(source) {
+  if (source === "unanswered" && randomSourceCount("unanswered") === 0) {
+    return showError("暂无未作答习题，可切换全库随机模式");
+  }
+  state.randomSource = source === "unanswered" ? "unanswered" : "all";
+  state.error = "";
+  savePracticeState();
+  render();
+}
+
 function setPracticeCount(count) {
   state.practiceCount = count;
   state.customPracticeCount = null;
@@ -785,6 +833,9 @@ function toggleChapter(id, checked) {
 function startPractice() {
   const total = selectedPracticeTotal();
   const count = effectivePracticeCount();
+  if (state.practiceMode === "random" && state.randomSource === "unanswered" && total === 0) {
+    return showError("暂无未作答习题，可切换全库随机模式");
+  }
   if (count > total) return showError(`所选章节总题量为 ${total}，不可超出`);
   let pool = shuffle(practicePool()).slice(0, count);
   if (!pool.length) return showError("当前模式下暂无可抽取题目。");
@@ -993,6 +1044,7 @@ window.logout = logout;
 window.go = go;
 window.toggleChapter = toggleChapter;
 window.setPracticeMode = setPracticeMode;
+window.setRandomSource = setRandomSource;
 window.setPracticeCount = setPracticeCount;
 window.setFavoriteOnly = setFavoriteOnly;
 window.sanitizeCustomCountInput = sanitizeCustomCountInput;
